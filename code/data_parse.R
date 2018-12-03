@@ -1,3 +1,6 @@
+library(tidyverse)
+library(lubridate)
+
 load("data/key_mappings.Rdata")
 load("data/pitches_full4.Rdata")
 people <- read_csv("data/People.csv")
@@ -43,7 +46,7 @@ pitches.TJ <- pitches.full4 %>%
   filter(surgery_date > min(datetime)) %>%
   mutate(before = datetime < surgery_date) %>%
   group_by(pitcher, before) %>%
-  mutate(final = max(datetime), first = min(datetime)) %>% filter(pitcher == 276520) %>% View()
+  mutate(final = max(datetime), first = min(datetime)) %>%
   group_by(pitcher) %>%
   mutate(final = min(final), first = (max(first)))
 
@@ -53,28 +56,40 @@ measure.period <- 365
 
 units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
   filter( (before == TRUE & datetime >  final - buff.pre.days - measure.period & datetime < final - buff.pre.days ) |
-          (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
+            (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
   inner_join(max_pitches, by = 'pitcher') %>%
-  group_by(pitcher, before) %>%
-  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch)) %>% 
-  spread(before, velo) %>% 
-  setNames(c('pitcher', 'after', 'before')) %>%
-  select('pitcher', 'before', 'after')
+  mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
+  group_by(pitcher, age, height, weight, throws, before) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
+            pitches = sum(before)) %>%
+  group_by(pitcher) %>%
+  mutate(pitches = max(pitches)) %>%
+  ungroup() %>%
+  mutate(before = factor(ifelse(before == TRUE, "before", "after"), levels = c("before", "after")))  %>% 
+  spread(before, velo) %>%
+  mutate(TJ = 1)
 
-units.TJ %>%
-  filter(!is.na(before) & !is.na(after)) %>%
-  View()
 
 ##### CONTROL UNITS
 
 pitches.NOTJ <- pitches.full4 %>%
   filter(is.na(surgery_date)) %>%
   inner_join(max_pitches, by = 'pitcher') %>%
-  group_by(pitcher, year = year(datetime)) %>%
-  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch)) %>%
+  mutate(year = year(datetime),
+         age = year(datetime) - year(bday) + 2) %>% 
+  group_by(pitcher, year, age, height, weight, throws) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch),
+            pitches = n()) %>%
   mutate(year4 = year + 4)
 
-units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'year4' = 'year')) %>% 
-  select(-year4.y)
+units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'height', 'weight', 'throws',
+                                                               'year4' = 'year')) %>% 
+  ungroup() %>%
+  select(pitcher, age.x, height, weight, throws, pitches.x, velo.x, velo.y) %>%
+  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'pitches', 'before', 'after')) %>%
+  mutate(TJ = 0)
 
+
+dat <- units.TJ %>% rbind(units.NOTJ) %>%
+  filter(!is.na(before), !is.na(after), !is.nan(before), !is.nan(after))
 
