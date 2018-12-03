@@ -50,8 +50,8 @@ pitches.TJ <- pitches.full4 %>%
   group_by(pitcher) %>%
   mutate(final = min(final), first = (max(first)))
 
-buff.pre.days <- 365
-buff.post.days <- 365
+buff.pre.days <- 90
+buff.post.days <- 90
 measure.period <- 365
 
 units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
@@ -61,9 +61,11 @@ units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
   mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
   group_by(pitcher, age, height, weight, throws, before) %>%
   summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
-            pitches = sum(before)) %>%
+            pitches = sum(before),
+            starter = sum(inning.x==1*before)) %>%
   group_by(pitcher) %>%
-  mutate(pitches = max(pitches)) %>%
+  mutate(pitches = max(pitches),
+         starter = max(starter) > 0) %>%
   ungroup() %>%
   mutate(before = factor(ifelse(before == TRUE, "before", "after"), levels = c("before", "after")))  %>% 
   spread(before, velo) %>%
@@ -79,17 +81,20 @@ pitches.NOTJ <- pitches.full4 %>%
          age = year(datetime) - year(bday) + 2) %>% 
   group_by(pitcher, year, age, height, weight, throws) %>%
   summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch),
-            pitches = n()) %>%
+            pitches = n(),
+            starter = sum(inning.x==1)>0) %>%
   mutate(year4 = year + 4)
 
 units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'height', 'weight', 'throws',
                                                                'year4' = 'year')) %>% 
   ungroup() %>%
-  select(pitcher, age.x, height, weight, throws, pitches.x, velo.x, velo.y) %>%
-  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'pitches', 'before', 'after')) %>%
+  select(pitcher, age.x, height, weight, throws, pitches.x, starter.x, velo.x, velo.y) %>%
+  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'pitches', 'starter', 'before', 'after')) %>%
   mutate(TJ = 0)
-
 
 dat <- units.TJ %>% rbind(units.NOTJ) %>%
   filter(!is.na(before), !is.na(after), !is.nan(before), !is.nan(after))
+
+View(dat)
+
 
