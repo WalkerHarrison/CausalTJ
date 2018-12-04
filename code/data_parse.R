@@ -94,9 +94,10 @@ units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'heigh
   mutate(TJ = 0)
 
 dat <- units.TJ %>% rbind(units.NOTJ) %>%
-  filter(!is.na(before), !is.na(after), !is.nan(before), !is.nan(after))
+  filter(!is.na(before), !is.nan(before), !is.nan(after)) %>%
+  filter(!is.na(height))
 
-View(dat)
+dat <- dat %>% mutate(S = !is.na(after))
 
 match <- matchit(TJ ~ age + height + weight + throws +
                    fastest_pitch + pitches + starter + before,

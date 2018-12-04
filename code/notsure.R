@@ -80,8 +80,6 @@ prepost %>%
   na.omit() %>% View()
 
 
-
-
 treatment = prepost %>%
   mutate(timeframe = ifelse(before_surgery, "preAvgFB", "postAvgFB")) %>%
   select(pitcher, timeframe, start_speed) %>%
