@@ -11,7 +11,7 @@ dat2 <- dat %>% mutate(diff = after - before) %>% select(-c(pitcher, after)) %>%
 ggpairs(dat2)
 
 ####### DIRECT REGRESSION ESTIMATOR
-summary(lm(diff ~ ., data = dat2))
+summary(lm(after ~ . -pitcher, data = dat))
 
 debit %>% mutate(prop.score = glm.predict) %>%
   ggplot(aes(prop.score, fill = debit_card1998)) +
@@ -65,12 +65,39 @@ return(debitT - debitF)
 
 ##################################################
 
+tjp <- dat %>% filter(TJ == 1) %>%
+  pull(pitcher) %>% sample(10)
+
+x <- pitches.TJ %>% 
+  filter(pitcher %in% tjp) %>%
+  #filter(pitcher == 518858) %>%
+  inner_join(max_pitches, by = 'pitcher') %>%
+  group_by(pitcher) %>%
+  filter(before == TRUE, datetime > final - 180) %>%
+  select(pitcher, datetime, start_speed) %>%
+  mutate(date = as.Date(datetime)) %>%
+  mutate(date = as.numeric(date - max(date))) %>%
+  mutate(start_speed = start_speed - mean(start_speed)) %>%
+  filter(min(date) < -100)
+
+
+x %>% ggplot(aes(date, start_speed, col = factor(pitcher))) + 
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = 'lm', 
+              formula = y ~ poly(x, 3), 
+              se = F) +
+  scale_y_continuous(limits = c(-10, 10))
+
+
+
 
 x <- pitches.TJ %>% 
   inner_join(max_pitches, by = 'pitcher') %>%
-  filter(pitch_type == fastest_pitch) %>%
+  mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
+  filter(pitch_type == fastest_pitch,
+         age %in% 25:30) %>%
   group_by(pitcher) %>%
-  filter(before == TRUE, datetime > final - 60) %>%
+  filter(before == TRUE, datetime > final - 2*365) %>%
   select(pitcher, datetime, start_speed) %>%
   mutate(date = as.Date(datetime)) %>%
   mutate(date = as.numeric(date - max(date))) %>%
@@ -79,6 +106,6 @@ x <- pitches.TJ %>%
 x %>% ggplot(aes(date, start_speed)) + 
   geom_point(alpha = 0.01) +
   geom_smooth() +
-  scale_y_continuous(limits = c(-5, 5))
+  scale_y_continuous(limits = c(-2, 2))
   
 
