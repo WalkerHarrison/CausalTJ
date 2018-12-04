@@ -130,3 +130,9 @@ m = lm(velo ~ TJ + period + TJ:period + age + weight + throws + starter, data = 
 # get coefficient and standard error
 m$coefficients["TJ:periodbefore"]
 coef(summary(m))[, "Std. Error"]["TJ:periodbefore"]
+
+
+df %>%
+  ggplot(aes(ps, fill = factor(TJ))) + geom_histogram() +
+  labs(x = "propensity score", fill = "TJ surgery")
+  
