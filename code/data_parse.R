@@ -50,8 +50,8 @@ pitches.TJ <- pitches.full4 %>%
   group_by(pitcher) %>%
   mutate(final = min(final), first = (max(first)))
 
-buff.pre.days <- 90
-buff.post.days <- 90
+buff.pre.days <- 365
+buff.post.days <- 365
 measure.period <- 365
 
 units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
@@ -59,7 +59,7 @@ units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
             (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
   inner_join(max_pitches, by = 'pitcher') %>%
   mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
-  group_by(pitcher, age, height, weight, throws, before) %>%
+  group_by(pitcher, age, height, weight, throws, fastest_pitch, before) %>%
   summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
             pitches = sum(before),
             starter = sum(inning.x==1*before)) %>%
@@ -79,17 +79,17 @@ pitches.NOTJ <- pitches.full4 %>%
   inner_join(max_pitches, by = 'pitcher') %>%
   mutate(year = year(datetime),
          age = year(datetime) - year(bday) + 2) %>% 
-  group_by(pitcher, year, age, height, weight, throws) %>%
+  group_by(pitcher, year, age, height, weight, throws, fastest_pitch) %>%
   summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch),
             pitches = n(),
             starter = sum(inning.x==1)>0) %>%
   mutate(year4 = year + 4)
 
 units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'height', 'weight', 'throws',
-                                                               'year4' = 'year')) %>% 
+                                                               'fastest_pitch', 'year4' = 'year')) %>%
   ungroup() %>%
-  select(pitcher, age.x, height, weight, throws, pitches.x, starter.x, velo.x, velo.y) %>%
-  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'pitches', 'starter', 'before', 'after')) %>%
+  select(pitcher, age.x, height, weight, throws, fastest_pitch, pitches.x, starter.x, velo.x, velo.y) %>%
+  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'fastest_pitch', 'pitches', 'starter', 'before', 'after')) %>%
   mutate(TJ = 0)
 
 dat <- units.TJ %>% rbind(units.NOTJ) %>%
