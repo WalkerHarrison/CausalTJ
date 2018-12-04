@@ -1,5 +1,6 @@
 library(tidyverse)
 library(lubridate)
+library(MatchIt)
 
 load("data/key_mappings.Rdata")
 load("data/pitches_full4.Rdata")
@@ -97,6 +98,15 @@ dat <- units.TJ %>% rbind(units.NOTJ) %>%
 
 View(dat)
 
+match <- matchit(TJ ~ age + height + weight + throws +
+                   fastest_pitch + pitches + starter + before,
+                 data = dat, method = "nearest", distance = "logit",
+                 ratio = 10, replace = TRUE)
+
+control_matches <- sort(as.numeric(unique(as.vector(match$match.matrix))))
+
+dat <- dat %>% filter(TJ == 1) %>% rbind(dat[control_matches,])
+
 
 ##### SECOND SET OF TREATMENT / CONTROL UNITS FOR D-I-D PARALLEL TREND ASSUMPTION
 
@@ -144,4 +154,13 @@ units.NOTJ2 <- pitches.NOTJ2 %>% inner_join(pitches.NOTJ2, by = c('pitcher', 'he
 
 dat2 <- units.TJ2 %>% rbind(units.NOTJ2) %>%
   filter(!is.na(before), !is.na(after), !is.na(before2), !is.nan(before), !is.nan(after), !is.nan(before2))
+
+match2 <- matchit(TJ ~ age + height + weight + throws +
+                   fastest_pitch + pitches + starter + before2,
+                 data = dat2, method = "nearest", distance = "logit",
+                 ratio = 10, replace = TRUE)
+
+control_matches2 <- sort(as.numeric(unique(as.vector(match2$match.matrix))))
+
+dat2 <- dat2 %>% filter(TJ == 1) %>% rbind(dat2[control_matches2,])
 
