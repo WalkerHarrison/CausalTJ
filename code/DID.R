@@ -3,12 +3,11 @@ datP = cbind(dat)
 ggpairs(select(dat, height, weight)) # height and weight are related, only use one
 dat = dat %>% select(-c(pitcher, height))
 
-### figure out how to test parallel trend assumption? need to do DID for two sets of pre-treatment data
 # treatment is ucl injury + TJ surgery
-
 # include service_time?
 
 # DID estimator - but need to stratify by covariates? model accomplishes stratification
+# this is nonparmetric estimator
 dat %>% group_by(TJ) %>% summarize(tBA = mean(after) - mean(before)) %>% pull(tBA) %>% diff()
 
 ################################################################################################
@@ -82,6 +81,7 @@ bootstrap_DID = function(data, bootstrap = FALSE) {
 set.seed(2018)
 thetas = unlist(bootstrap_DID(dat))
 est.ATT = thetas[1] - thetas[-1]
+print(est.ATT)
 nsamps = 1000
 bootstrap.ATT = sapply(1:nsamps, function(x) unlist(bootstrap_DID(dat, TRUE))) %>%
   apply(1, function(x) {.[1,] - x})
@@ -95,9 +95,8 @@ est.ATT + 1.96*SE.ATT
 
 apply(bootstrap.ATT, 2, mean)
 
-################################################################################################
+#### test parallel trend assumption #####
 
-# test parallel trend assumption
 datP2 = cbind(dat2)
 ggpairs(select(dat2, height, weight)) # height and weight are related, only use one
 dat2 = dat2 %>% select(-c(pitcher, height, after)) %>%
@@ -119,7 +118,7 @@ est.ATT2 + 1.96*SE.ATT2
 
 apply(bootstrap.ATT2, 2, mean)
 
-################################################################################################
+#### extra stuff ####
 
 # each unit gets two rows, one for pre- and post-treatment
 datDID = dat %>% gather(key = "period", value = "velo", c("before", "after"))
@@ -133,6 +132,49 @@ coef(summary(m))[, "Std. Error"]["TJ:periodbefore"]
 
 
 df %>%
-  ggplot(aes(ps, fill = factor(TJ))) + geom_histogram() +
-  labs(x = "propensity score", fill = "TJ surgery")
+  ggplot(aes(ps, fill = factor(TJ))) + geom_histogram(alpha = 0.8) +
+  labs(x = "propensity score", fill = "TJ surgery",
+       title = "Propensity score by group")
   
+#### ASD ####
+
+dat_ASD = dat %>% mutate(starter = as.numeric(starter))
+dat_ASD = dat_ASD %>%
+  mutate_if(is.character, factor) %>%
+  select_if(is.factor) %>%
+  as.data.frame() %>%
+  acm.disjonctif() %>%
+  bind_cols(select_if(dat, is.numeric), .)
+  
+# fit propensity score model
+lm.ps = glm(TJ ~ . - after, data = dat_ASD, family = "binomial")
+dat_ASD = dat_ASD %>% mutate(ps = predict(lm.ps, type = "response"))
+
+D = dat_ASD$TJ
+weights_reg = 1
+weights_ipw = dat_ASD %>%
+  mutate(w = ifelse(TJ == 1, 1, ps / (1 - ps))) %>%
+  pull(w)
+
+calculate_ASD = function(weights) {
+  dat_ASD %>%
+    select(-c(TJ, after, ps)) %>%
+    apply(2, function(x) {
+      (abs(sum(D * x * weights) / sum(D * weights) -
+             sum((1 - D) * x * weights) / sum((1 - D) * weights)) /
+         sqrt(var((D * x)[which(D == 1)]) / sum(D * weights) +
+                var(((1 - D) * x)[which(D == 0)]) / sum((1 - D) * weights))
+       )
+    })
+  }
+
+data.frame(Unweighted = calculate_ASD(weights_reg),
+           IPW = calculate_ASD(weights_ipw)) %>%
+  gather(weight) %>%
+  mutate(weight = ordered(factor(weight), levels = c("Unweighted", "IPW"))) %>%
+  ggplot(aes(x = weight, y = value)) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept = 0.1), linetype = "dashed", color = "blue") +
+  labs(y = "Abs. Standardized Difference") +
+  theme(axis.title.x = element_blank())
+
