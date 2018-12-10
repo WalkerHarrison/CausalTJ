@@ -1,7 +1,9 @@
 library(tidyverse)
 library(lubridate)
 library(MatchIt)
+library(ade4)
 
+setwd("/Users/lisalebovici/Documents/Duke/Fall18/STA640/hw/CausalTJ")
 load("data/key_mappings.Rdata")
 load("data/pitches_full4.Rdata")
 people <- read_csv("data/People.csv")
@@ -93,11 +95,14 @@ units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'heigh
   setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'fastest_pitch', 'pitches', 'starter', 'before', 'after')) %>%
   mutate(TJ = 0)
 
-dat <- units.TJ %>% rbind(units.NOTJ) %>%
-  filter(!is.na(before), !is.nan(before), !is.nan(after)) %>%
-  filter(!is.na(height))
+# dat <- units.TJ %>% rbind(units.NOTJ) %>%
+#   filter(!is.na(before), !is.nan(before), !is.nan(after)) %>%
+#   filter(!is.na(height))
 
-dat <- dat %>% mutate(S = !is.na(after))
+dat <- units.TJ %>% rbind(units.NOTJ) %>%
+  filter(!is.na(before), !is.nan(before), !is.na(after), !is.nan(after))
+
+# dat <- dat %>% mutate(S = !is.na(after))
 
 match <- matchit(TJ ~ age + height + weight + throws +
                    fastest_pitch + pitches + starter + before,
@@ -109,7 +114,7 @@ control_matches <- sort(as.numeric(unique(as.vector(match$match.matrix))))
 dat <- dat %>% filter(TJ == 1) %>% rbind(dat[control_matches,])
 
 
-##### SECOND SET OF TREATMENT / CONTROL UNITS FOR D-I-D PARALLEL TREND ASSUMPTION
+##### SECOND SET OF TREATMENT / CONTROL UNITS FOR D-I-D PARALLEL TREND ASSUMPTION #####
 
 units.TJ2 <- pitches.TJ %>% group_by(pitcher) %>%
   filter( (before == TRUE & ((datetime > final - buff.pre.days - measure.period & datetime < final - buff.pre.days) |
@@ -165,3 +170,38 @@ control_matches2 <- sort(as.numeric(unique(as.vector(match2$match.matrix))))
 
 dat2 <- dat2 %>% filter(TJ == 1) %>% rbind(dat2[control_matches2,])
 
+
+##### CONTROL UNITS FOR SENSITIVITY ANALYSIS #####
+
+units.NOTJ = map_dfr(2008:2018, function(year) {
+  print(year)
+  
+  pitches.full4 %>%
+    filter(is.na(surgery_date)) %>%
+    inner_join(max_pitches, by = 'pitcher') %>%
+    group_by(pitcher) %>%
+    mutate(surgery_date = ymd(paste0(year, "06", "01")),
+           return_date = surgery_date + 485) %>% # 15 months
+    filter(surgery_date > min(datetime)) %>%
+    mutate(before = case_when(datetime < surgery_date ~ TRUE,
+                              datetime >= return_date ~ FALSE)) %>%
+    filter(!is.na(before)) %>%
+    group_by(pitcher, before) %>%
+    mutate(final = max(datetime), first = min(datetime)) %>%
+    group_by(pitcher) %>%
+    mutate(final = min(final), first = max(first)) %>%
+    filter( (before == TRUE & datetime >  final - buff.pre.days - measure.period & datetime < final - buff.pre.days ) |
+              (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
+    mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
+    group_by(pitcher, age, height, weight, throws, fastest_pitch, before) %>%
+    summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
+              pitches = sum(before),
+              starter = sum(inning.x==1*before)) %>%
+    group_by(pitcher) %>%
+    mutate(pitches = max(pitches),
+           starter = max(starter) > 0) %>%
+    ungroup() %>%
+    mutate(before = factor(ifelse(before == TRUE, "before", "after"), levels = c("before", "after")))  %>% 
+    spread(before, velo) %>%
+    mutate(TJ = 0)
+}) %>% na.omit()
