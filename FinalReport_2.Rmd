@@ -1,0 +1,149 @@
+---
+title: "STA640 Causal Inference: Final report"
+author: "Walker Harrison"
+date: "12/12/2018"
+header-includes:
+   - \usepackage{amsmath}
+output: pdf_document
+---
+```{r, include = FALSE}
+library(tidyverse)
+library(numDeriv)
+
+dat <- read_csv("dat.csv")
+
+n <- nrow(dat)
+Z <- dat$TJ
+S <- dat$S
+A <- dat$brk
+
+X <- as.matrix(dat[ , c('weight', 'age', 'before')])
+
+S1_Z0 = S == 1 & Z == 0
+S0_Z0 = S == 0 & Z == 0
+S1_Z1 = S == 1 & Z == 1
+S0_Z1 = S == 0 & Z == 1
+
+SZ = cbind(S1_Z0, S0_Z0, S1_Z1, S0_Z1)
+Y <- dat$diff
+
+W <- cbind(rep(1, n), X, A)
+d <- ncol(W)
+```
+An oversight of standard approaches to our problem is that we're only considering players who actually had the chance to throw pitches after their surgery. In reality, many players don't return, either because of a combination of age and lack of skill or because they never recovered from the procedure. This dynamic introduces the possibility of survivor bias in our analysis.
+
+An approach to similar problems with loss to follow-up (which often occurs in the medical community), where outcomes can be truncated by death, is to create principal strata, denoted by $G$, for your units based on whether they would survive treatment ($S(1)$) and non-treatment ($S(1)$). Subjects are divided into four categories or survival types:
+
++ Live-live ($G = LL$, or "immune") for $S(1) = S(0) = 1$
++ Live-die ($G = LD$, or "protected") for $S(1) = 1, S(0) = 0$
++ Die-live ($G = DL$, or "harmed") for $S(1) = 0, S(0) = 1$
++ Die-die ($G = DD$, or "doomed") for $S(1) = 0, S(0) = 0$
+
+In order to utilize these strata, some additional assumptions must be made. One is "monotonicity," which means that $S(1)\geq S(0)$ for all subjects. The logic behind this assumption is that curative treatments can't cause death for patients who would have otherwised lived. It eliminates the possibility of the DL stratum. Negative or reverse monotonicity can also be invoked for harmful treatments, such as smoking, such that $S(1)\leq S(0)$, eliminating the LD category. We use this version for our data, making the claim that no one who was destined to be out of baseball ended up still pitching (or "surviving") because they tore their UCL and required surgery. In other words, Tommy John surgery didn't save anyone's career.
+
+The other important assumption is that we can use a "substitive variable" $A$ that will provide information about subjects' underlying strata, given that we can't actually observe them, without affecting the target variable. More formally, we assume, respectively, "exclusion restriction"" and "substitution relevance":
+
++ The covariate $A$ is independent of $Y$ given $G$ and $Z$, denoted as $A \perp Y|(Z, G)$
++ $P(A|G = LL)\neq P(A|G = LD)$
+
+Under this framework, the estimand we're after is the survivor average causal effect, or the average causal effect on the LL stratum: 
+$$\Delta_{LL} = E\big [Y(1) - Y(0) | G = LL\big].$$
+
+To estimate this value, we modify an approach proposed in *Identification and estimation of causal effects with outcomes truncated by death* (Wang, L., X.-H. Zhou, and T. S. Richardson (2017)) as well as code written by Zhixuan Shao of Peking University.
+
+Because we've eliminated the possibility of LD subjects, any surviving treatment unit in our dataset must be from the LL stratum. Therefore, we can use their results to directly model the influence of our covariates and substitution variable on their outcome, velocity, with linear regression: 
+
+$$
+\begin{aligned}
+E\big[Y (1) | Z = 1, G = LL, X , A\big] = \alpha_{00} + X^T\alpha_{01} + A\alpha_{02}
+\end{aligned}
+$$
+
+
+```{r}
+lm.y.z1 <- lm(Y ~ 1 + X + A, subset = Z == 1)
+alpha_1 <- lm.y.z1$coef
+```
+
+We assume that we can model the probability of surviving non-treatment with logistic regression on the covariates and the substitute variable:
+
+$$
+\begin{aligned}
+P(S(0) = 1 | X , A) &= \frac{\exp(\beta_{0} + X^T\beta{1} + A\beta_{2})}{1 + \exp(\beta_{0} + X^T\beta{1} + A\beta_{2})} = P_\beta
+\end{aligned}
+$$
+We also assume that we can model the ratio of probabilities of surviving non-treatment and surviving treatment with logistic regression on the covariates and the substitute variable:
+
+$$
+\begin{aligned}
+\frac{P(S(1) = 1 | X , A)}{P(S(0) = 1 | X , A)} &= \frac{\exp(\gamma_{0} + X^T\gamma_{1} + A\gamma_{2})}{1 + \exp(\gamma_{0} + X^T\gamma_{1} + A\gamma_{2})} = P_\gamma
+\end{aligned}
+$$
+We note that for control units, $P(S(0) = 1 | X , A) = P_\beta, \ \ P(S(0) = 0 | X , A) = 1 - P_\beta$, and for treatment units, $P(S(1) = 1 | X , A) = P_\beta P_\gamma, \ \ P(S(1) = 0 | X , A) = 1 - P_\beta P_\gamma$. Moreover, $P_\beta P_\gamma$ is each unit's estimated probabilty of being in the LL stratum, since only that category survives treatment. Therefore, when we make the likelihood (and its derivatives) from the data, we can use indicator functions for results that fit these criteria:
+
+$$
+\begin{aligned}
+L(\beta, \gamma| \boldsymbol{X}, Y) &= \prod_{i=1}^n \bigg [ I_{S = 1, Z = 0}P_\beta + 
+I_{S = 0, Z = 0}(1-P_\beta) + I_{S = 1, Z = 1}P_\beta P_\gamma + I_{S = 0, Z = 1}(1-P_\beta P_\gamma )\bigg ]\\
+l(\beta, \gamma| \boldsymbol{X}, Y) &= \sum_{i=1}^n \bigg [ I_{S = 1, Z = 0}\log P_\beta + 
+I_{S = 0, Z = 0} \log (1-P_\beta) + I_{S = 1, Z = 1} \log P_\beta P_\gamma + I_{S = 0, Z = 1} \log (1-P_\beta P_\gamma )\bigg ]\\
+\frac{dl}{d\beta} &= \sum_{i=1}^n \bigg [ I_{S = 1, Z = 0}\frac{1}{P_\beta} - 
+I_{S = 0, Z = 0} \frac{1}{(1-P_\beta)} + I_{S = 1, Z = 1} \frac{1}{P_\gamma} - I_{S = 0, Z = 1} \frac{P_\gamma}{(1-P_\beta P_\gamma )}\bigg ]\\
+\frac{dl}{d\gamma} &= \sum_{i=1}^n \bigg [I_{S = 1, Z = 1} \frac{1}{P_\beta} - I_{S = 0, Z = 1} \frac{P_\beta}{(1-P_\beta P_\gamma )}\bigg ]\\
+\end{aligned}
+$$
+```{r}
+expit <- function(x) exp(x) / (1 + exp(x))
+
+LL <- function(beta, gamma, W, SZ) {
+  Pbeta = expit(W %*% beta)
+  Pgamma = expit(W %*% gamma)
+  LogLike = sum(SZ[, 1] * log(Pbeta) +           SZ[, 2] * log(1 - Pbeta) + 
+                SZ[, 3] * log(Pbeta*Pgamma) +    SZ[, 4] * log(1 - Pbeta * Pgamma))
+  return(LogLike)
+}
+
+LL.gr <- function(beta, gamma, W, SZ) {
+  Pbeta = ebeta = as.vector(expit(W %*% beta))
+  Pgamma = egamma = as.vector(expit(W %*% gamma))
+  LL.beta <- colSums((SZ[, 1]/(Pbeta) -    SZ[, 2]/(1-Pbeta) +
+                      SZ[, 3]/Pbeta -      SZ[, 4]*Pgamma / (1 - Pbeta * Pgamma)) * W)
+  LL.gamma <- colSums((SZ[, 3]/Pgamma - SZ[, 4]*Pbeta / (1 - Pbeta * Pgamma)) * W)
+  return (c(LL.beta, LL.gamma))
+}
+
+opt3 <- optim(c(rep(0, d), rep(0, d)),
+              fn = function(BG, W, SZ) LL(BG[1:d], BG[-(1:d)], W, SZ), W = W, SZ = SZ,
+              gr = function(BG, W, SZ) LL.gr(BG[1:d], BG[-(1:d)], W, SZ),
+              method = "BFGS", hessian = FALSE, control = list(fnscale = -1, maxit = 1000))
+
+beta <- opt3$par[1:d]; gamma <- opt3$par[-(1:d)]
+```
+
+Our final parametrization is the same original linear model, except applied to the control scenario this time. We note that we now regress on $G$, which makes including $A$ unneccesary by the exclusion restriction assumption, and code $G = 1$ for LL and $G=0$ for DL. We train this model on the treatment units, using estimates of $P_\gamma$ as a substitute for the unknown $G$ since this methodology is predicated on $P_\gamma$ distinguishing the LL stratum from the LD stratum.
+
+$$
+\begin{aligned}
+E\big[Y (0) | Z = 0, G, X , A\big] = \alpha_{10} + X^T\alpha_{11} + G\alpha_{12}
+\end{aligned}
+$$
+
+```{r}
+lm.y.z0 <- lm(Y ~ 1 + X + expit(W %*% gamma), subset = (Z == 0))
+alpha_0 <- lm.y.z0$coef
+```
+
+We can now estimate both $E\big [Y(1)| G = LL\big]$ and $E\big [Y(0) | G = LL\big]$ and calculate SACE as the difference, rembemering to weight by $P_\beta P_\gamma$:
+
+```{r}
+W.LL <- W; W.LL[, 5] <- 1 
+P.LL <- expit(W %*% beta) * expit(W %*% gamma)
+
+mu.LL.0 <- W.LL %*% alpha_0
+mu.LL.0.weighted <- sum(P.LL * mu.LL.0)/sum(P.LL)
+
+mu.LL.1 <- W %*% alpha_1
+mu.LL.1.weighted <- sum(P.LL * mu.LL.1)/sum(P.LL)
+
+SACE = mu.LL.1.weighted - mu.LL.0.weighted
+```
