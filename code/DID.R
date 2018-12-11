@@ -25,7 +25,7 @@ bootstrap_DID = function(data, bootstrap = FALSE) {
   
   # fit outcome model
   m = lm(velo ~ TJ + period + TJ:period + age + weight +
-           throws + fastest_pitch + starter, data = dfDID)
+           throws + fastest_pitch + starter + pitches, data = dfDID)
   
   # fit propensity score model
   lm.ps = glm(TJ ~ . - after, data = df, family = "binomial")
