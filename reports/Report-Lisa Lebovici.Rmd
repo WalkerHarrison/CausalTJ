@@ -1,0 +1,570 @@
+---
+title: "STA 640: Does Tommy John Surgery Make Pitchers Throw Harder?"
+author: "Lisa Lebovici"
+date: "December 12, 2018"
+output: pdf_document
+header-includes:
+  - \usepackage{amsmath}
+  - \usepackage{MnSymbol}
+---
+
+```{r setup, include = FALSE, message = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, echo = FALSE)
+library(tidyverse)
+library(lubridate)
+library(MatchIt)
+library(ade4)
+library(knitr)
+library(kableExtra)
+library(ggpubr)
+library(extrafont)
+
+# before running:
+# Sys.setenv(TZ="America/New_York")
+# loadfonts()
+```
+
+```{r, cache = TRUE}
+load("/Users/lisalebovici/Documents/Duke/Fall18/STA640/hw/CausalTJ/data/key_mappings.Rdata")
+load("/Users/lisalebovici/Documents/Duke/Fall18/STA640/hw/CausalTJ/data/pitches_full4.Rdata")
+people <- read_csv("/Users/lisalebovici/Documents/Duke/Fall18/STA640/hw/CausalTJ/data/People.csv")
+TJ <- read_csv("/Users/lisalebovici/Documents/Duke/Fall18/STA640/hw/CausalTJ/data/TJ.csv")
+
+##### ADD MLBID TO PEOPLE
+people <- people %>%
+  left_join(select(key_mappings, key_mlbam, key_bbref), by = c("bbrefID" = "key_bbref")) %>%
+  rename("pitcher" = "key_mlbam") %>%
+  mutate(bday = ymd(paste(birthYear, birthMonth, birthDay))) %>%
+  select(pitcher, bday, height, weight, throws)
+
+##### ADD PERSONAL DATA TO PITCHES
+pitches.full4 <- pitches.full4 %>% 
+  left_join(people, by = "pitcher")
+
+##### ADD TJ TO PITCHES
+TJ.once <- TJ %>% group_by(pitcher) %>%
+  mutate(n = n()) %>%
+  filter(n < 2) %>%
+  select(pitcher, surgery_date, return_date)
+
+pitches.full4 <- pitches.full4 %>% 
+  left_join(TJ.once, by = "pitcher") %>%
+  mutate(datetime = as.Date(datetime))
+
+max_pitches <- pitches.full4 %>%
+  group_by(pitcher, pitch_type) %>%
+  summarize(n = n(), speed = mean(start_speed, na.rm = TRUE)) %>%
+  group_by(pitcher) %>%
+  mutate(pct_thrown = n/sum(n)) %>%
+  filter(pct_thrown >= 0.1) %>%
+  filter(speed == max(speed)) %>%
+  ungroup() %>%
+  select(pitcher, pitch_type) %>%
+  rename(fastest_pitch = pitch_type)
+```
+
+```{r, cache = TRUE}
+##### TREATMENT UNITS
+pitches.TJ <- pitches.full4 %>%
+  filter(!is.na(surgery_date)) %>%
+  group_by(pitcher) %>%
+  filter(surgery_date > min(datetime)) %>%
+  mutate(before = datetime < surgery_date) %>%
+  group_by(pitcher, before) %>%
+  mutate(final = max(datetime), first = min(datetime)) %>%
+  group_by(pitcher) %>%
+  mutate(final = min(final), first = (max(first)))
+
+buff.pre.days <- 365
+buff.post.days <- 365
+measure.period <- 365
+
+units.TJ <- pitches.TJ %>% group_by(pitcher) %>%
+  filter( (before == TRUE & datetime >  final - buff.pre.days - measure.period & datetime < final - buff.pre.days ) |
+            (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
+  inner_join(max_pitches, by = 'pitcher') %>%
+  mutate(age = as.numeric(round((surgery_date - bday)/365))) %>%
+  group_by(pitcher, age, height, weight, throws, fastest_pitch, before) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
+            pitches = sum(before),
+            starter = sum(inning.x==1*before)) %>%
+  group_by(pitcher) %>%
+  mutate(pitches = max(pitches),
+         starter = max(starter) > 0) %>%
+  ungroup() %>%
+  mutate(before = factor(ifelse(before == TRUE, "before", "after"), levels = c("before", "after")))  %>% 
+  spread(before, velo) %>%
+  mutate(TJ = 1)
+
+##### CONTROL UNITS
+pitches.NOTJ <- pitches.full4 %>%
+  filter(is.na(surgery_date)) %>%
+  inner_join(max_pitches, by = 'pitcher') %>%
+  mutate(year = year(datetime),
+         age = year(datetime) - year(bday) + 2) %>% 
+  group_by(pitcher, year, age, height, weight, throws, fastest_pitch) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch),
+            pitches = n(),
+            starter = sum(inning.x==1)>0) %>%
+  mutate(year4 = year + 4)
+
+units.NOTJ <- pitches.NOTJ %>% inner_join(pitches.NOTJ, by = c('pitcher', 'height', 'weight', 'throws',
+                                                               'fastest_pitch', 'year4' = 'year')) %>%
+  ungroup() %>%
+  select(pitcher, age.x, height, weight, throws, fastest_pitch, pitches.x, starter.x, velo.x, velo.y) %>%
+  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'fastest_pitch', 'pitches', 'starter', 'before', 'after')) %>%
+  mutate(TJ = 0)
+
+dat <- units.TJ %>% rbind(units.NOTJ) %>%
+  filter(!is.na(before), !is.nan(before), !is.na(after), !is.nan(after))
+
+match <- matchit(TJ ~ age + height + weight + throws +
+                   fastest_pitch + pitches + starter + before,
+                 data = dat, method = "nearest", distance = "logit",
+                 ratio = 10, replace = TRUE)
+
+control_matches <- sort(as.numeric(unique(as.vector(match$match.matrix))))
+
+dat <- dat %>% filter(TJ == 1) %>% rbind(dat[control_matches,])
+```
+
+## Introduction
+
+Since the first Tommy John surgery was performed in 1974, Major League Baseball has witnessed an explosion of pitchers undergoing the procedure. Seen as a way to extend players' careers, and the only effective solution for a severe elbow injury, the operation has become more and more common as pitchers begin throwing harder at younger ages. Indeed, the rate of surgeries among minor and major league players has increased at such a rapid pace that every year between 2012 and 2017 had at least as many surgeries as the entirety of the 1990s.
+
+\vspace{1em}
+```{r, fig.height = 2.5}
+TJ %>%
+  mutate(year = year(surgery_date)) %>%
+  group_by(year) %>%
+  count() %>%
+  ggplot(aes(x = year, y = n)) +
+  geom_line() +
+  geom_point(size = 1) +
+  labs(x = "Year", y = "# of TJ Surgeries",
+       title = "Tommy John surgeries by year among high school through major league players, 1974 -   2018") +
+  theme_bw() +
+  theme(axis.title.x = element_text(family = "CMU Serif", size = 10),
+        axis.title.y = element_text(family = "CMU Serif", size = 10),
+        axis.text.x  = element_text(family = "CMU Serif", size = 9),
+        axis.text.y  = element_text(family = "CMU Serif", size = 9),
+        plot.title = element_text(family = "CMU Serif", size = 10),
+        plot.margin  = margin(10, 10, 10, 20))
+```
+
+As the number of operations has grown, a myth has emerged that players who receive Tommy John surgery throw faster and harder upon recovery than they did before the injury. Consequently, many young pitchers, as young 15-19 years old, have preemptively sought out the surgery as a way to gain a competitive edge.
+
+This paper will examine the validity of this claim through a potential outcomes framework. Employing both difference-in-differences and principal stratification, we attempt to answer the question as to whether or not pitchers increase their velocity following Tommy John surgery as compared to their pre-injury velocity.
+
+## Background
+
+Tommy John surgery is named after the first pitcher to undergo the operation in 1974. It is performed to repair a tear in the elbow's ulnar collateral ligament (UCL), which absorbs a great deal of stress from a pitcher's throwing motion. The surgery works by reconstructing the ligament using a tendom from elsewhere in the patient's body (usually opposite elbow or knee) or from a cadaver. The recovery period is long, often lasting around 12-18 months. However, for pitchers with a UCL injury, there aren't really any other options currently that will give them a decent chance of continuing their careers other than Tommy John surgery.
+
+Previous research has proved inconclusive as to whether or not the procedure improves players' post-surgery velocity. In a 2013 study, Erickson, Gupta, Harris et al. evaluated 148 pitchers between 1986 and 2012 on high-level performance metrics, as pitch-by-pitch data was not available at this time. They found that pitchers were statistically better in ERA, win-loss percentage, and walks/hits allowed, concluding that "performance declined before surgery and improved after surgery" [2]. On the other hand, Jiang and Leland (2014) did not find any significant decreases in the velocity of fastballs, changeups, and curveballs post-surgery when compared with a pair-matched control group without any known injuries [3]. Similar other studies have also found no difference or a slight decrease.
+
+However, in many studies on this topic, the comparison that is being performed is velocity directly prior to the surgery (when a player is injured and naturally throwing slower) to velocity following recovery, which isn't necessarily apples-to-apples. This is usually due to a lack of available data far enough back in time to exclude the data directly before and after the surgery.
+
+## Data and Methodology
+
+Pitch data was pulled from the PitchFx database, which is managed by the MLB and contains detailed information on every single pitch from 2008-present via high-speed cameras installed in all MLB stadiums. This data was combined with a database of all players that have had Tommy John surgery, as well as information on players' ages, height, weight, and handedness. When all of the disparate sources were put together, this left us with approximately 7.7M unique pitches.
+
+Our outcome of interest, $Y_i$, is the average fastball velocity in MPH of a pitcher following surgery. The treatment, $Z_i$, is taken to be a UCL injury and the resulting surgery. We consider both the injury and surgery to be the treatment due to the fact that, as mentioned above, there aren't really any cases where players would get this particular injury without having the operation. Thus, the control group is all players who have not had a UCL injury and therefore never needed the surgery.
+
+The estimand that we consider is the average treatment effect for the treated:
+$$ATT = \mathbb{E}[Y_{i,t+1}(1) - Y_{i,t+1}(0) \mid Z_i = 1] = \theta_1 - \theta_0$$
+
+Seven covariates were incorporated in the model and are described in the table below.
+
+```{r}
+data.frame(Covariate = c("age", "weight", "handedness", "fastestPitch", "starter", "numPitches", "preVelocity"),
+           Type = c("integer", "integer", "character", "character", "logical", "integer", "double"),
+           Description = c("age at time of TJ surgery", "weight according to MLB records", "throws lefty or righty", "four-seam fastball, two-seam fastball, or sinking fastball", "starter or reliever", "pitches thrown over the measure period", "average fastball velocity (MPH) pre-treatment")) %>%
+  kable(align = "l", booktabs = TRUE, linesep = "", caption = "Description of covariates",
+        format = "latex") %>% kable_styling(latex_options = c("hold_position", "center"))
+```
+
+To determine the pre- and post-treatment velocity, we exclude both the year's worth of data directly preceding surgery and following their return to the major leagues, so as to hopefully compare a player's true pre-injury velocity with their post-injury velocity. We then take the year before and after those buffer periods as our measure period, from which we calculate average velocity. For the control units, we impose a hypothetical "surgery date" so that we can have comparable timeframes for pre- and post-operative performance.
+
+We now explore two different methods for computing our estimand, ATT.
+
+### Method 1: Difference-in-differences
+
+To use difference-in-differences, three assumptions must hold: (1) SUTVA, (2) overlap, and (3) parallel trend assumption. It seems reasonable to assume that one pitcher's velocity does not affect any other pitcher's velocity, so we can say that SUTVA holds. For overlap, we match every treated unit with 10 control units to ensure that our control sample is representative of the treated group. Finally, we assess the parallel trend assumption by performing a DID analysis over two pre-treatment periods to check whether, in the absence of treatment, we would expect our treated group and control group to follow the same trend over time.
+
+With these assumptions met, we will take a parametric approach to difference-in-differences. The idea behind DID is that we can model both the before-after relationship as well as the treatment-control relationship:
+
+```{r}
+data.frame(group = c("Control", "Treated"),
+           Before = c("$\\boldsymbol{Y_{i,t}(0)},\ Y_{i,t}(1)$", "$\\boldsymbol{Y_{i,t}(0)},\ Y_{i,t}(1)$"),
+           After = c("$\\boldsymbol{Y_{i,t+1}(0)},\ Y_{i,t+1}(1)$", "$Y_{i,t+1}(0),\ \\boldsymbol{Y_{i,t+1}(1)}$")) %>%
+  kable(format = "latex", align = "c", col.names = c("", "Before", "After"),
+        escape = FALSE, booktabs = TRUE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+We can denote $\theta_1 = Y_{i,t+1}(1)$ and $\theta_0 = Y_{i,t+1}(0)$ for the treated group. While $\theta_1$ is observed from the data, we will need to estimate $\theta_0$. We do this in the following way: we can separately model $Y_{i,t}(0) \mid X_i,\ Z_i = 0$ and $Y_{i,t+1}(0) \mid X_i,\ Z_i = 0$ using linear regression, with the outcome models defined below.
+$$
+\begin{aligned}
+\text{velocity}_i\ = \alpha_0 &+ \alpha_1Z_i + \alpha_2\text{time}_i + \alpha_3Z_i*\text{time}_i + \alpha_4\text{age}_i +\alpha_5\text{weight}_i \\
+&+ \alpha_6\text{handedness}_i + \alpha_7\text{fastestPitch}_i + \alpha_8\text{starter}_i
+\end{aligned}
+$$
+
+We can then estimate the effect from time $t$ to time $t+1$ by applying these models to the treated group and calculating the difference; adding this difference to $Y_{i,t}(0)$ will give us an estimation for $\theta_0$. Finally, taking $\theta_1 - \hat{\theta_0}$ will provide an estimate of ATT.
+
+To estimate $\theta_0$, we take three different approaches: regression, inverse probability weighting (IPW), and a double robust estimator [5]. We first define the regression estimator as follows:
+$$
+\begin{aligned}
+\hat{\theta_0}^{reg} = \frac{\sum_{i=1}^n Z_i Y_{i,t}}{\sum_{i=1}^n Z_i} + \frac{\sum_{i=1}^n Z_i (\hat{Y}_{i,t+1}(0) - \hat{Y}_{i,t}(0))}{\sum_{i=1}^n Z_i}
+\end{aligned}
+$$
+
+Next, we turn to the IPW estimator. Note that inverse probability weights are computed as 1 for the treated group and $\hat{e}(X_i) / (1 - \hat{e}(X_i))$, where $e(X)$ is an estimated propensity score. Using logistic regression, a propensity score model with main effects was fit to the data:
+
+$$
+\begin{aligned}
+logit (Pr(Z_i = 1 \mid X_i)) = \beta_0 &+ \beta_1\text{age}_i + \beta_2\text{weight}_i + \beta_3\text{handedness}_i + \beta_4\text{fastestPitch}_i \\
+&+ \beta_5\text{starter}_i + \beta_6\text{numPitches}_i + \beta_7\text{preVelocity}_i
+\end{aligned}
+$$
+
+This allows us to then define the corresponding IPW estimator:
+
+$$
+\begin{aligned}
+\hat{\theta_0}^{ipw} &= \frac{\sum_{i=1}^n Z_i Y_{i,t}w_i}{\sum_{i=1}^n Z_i} + \frac{\sum_{i=1}^n (1 - Z_i)(Y_{i,t+1} - Y_{i,t})w_i}{\sum_{i=1}^n Z_i}
+\end{aligned}
+$$
+
+Finally, we can compute the double robust DID estimator by augmenting the IPW estimator with regression:
+$$
+\begin{aligned}
+\hat{\theta_0}^{dr} = \hat{\theta_0}^{ipw} + \frac{1}{\sum_{i=1}^n Z_i}\sum_{i=1}^n \frac{(Z_i - \hat{e}(X_i))(\hat{Y}_{i,t+1}(0) - \hat{Y}_{i,t}(0))}{1-\hat{e}(X_i)}
+\end{aligned}
+$$
+
+### Method 2: Survivor Average Causal Effect via Principal Stratification
+
+A fundamental issue of the DID approach is survivor bias; outcomes are lost for players who don't return to the Major Leagues following the surgery, either because they're still hurt, too old, or simply not competitive enough anymore. To account for this reality, we can borrow from the medical field which uses principal stratification for outcomes truncated by death. We stratify units into four categories according to their counterfactual survival status based on treatment, as shown below.
+
+```{r}
+df = data.frame(c1 = linebreak(c("Pitch-pitch (PP) \n(will return to pitching regardless of surgery)\n\n", "Don't pitch - pitch (DP) \n(will only pitch if they don't get injured)")),
+                c2 = linebreak(c("Pitch - don't pitch (PD) \n(will only pitch if they get injured)\n\n", "Don't pitch - don't pitch (DD) \n(will not pitch again regardless of surgery)")))
+
+rownames(df) = linebreak(c("$S_i(1)$ = 1\n\n", "$S_i(1)$ = 0"))
+kable(df, col.names = c("$S_i(0)$ = 1", "$S_i(0)$ = 0"), booktabs = TRUE,
+      align="l", caption="Four possible survival types", escape = FALSE) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+We can then define a substitute variable $A$ to enable an estimate of the Survivor Average Causal Effect (SACE), using equations provided by Ding et al (2011).
+
+There are three assumptions that we must make to proceed:
+
+(1) monotonicity: there are no players in the pitch - don't pitch category. In other words, there are no pitchers whose careers were saved by getting a UCL injury and having surgery, but who would have stopped playing in the absence of an injury.
+
+(2) exclusion restriction: the substitute variable is independent of the outcome given treatment, survival type, and covariates (the effect of movement on pitch velocity is already captured, so this is satisfied).
+
+(3) substitution relevance: the substitute variable is dependent on the survival type given covariates. That is to say, pitchers who would continue playing regardless of injury would be expected to have better pitch movement than those who won't continue playing.
+
+Given these assumptions to be plausible, we can now proceed with the SACE estimand, defined accordingly:
+$$
+\begin{aligned}
+SACE = \underbrace{\mathbb{E}[Y_i \mid G_i = PP,\ Z_i = 1,\ X_i]}_{\text{directly from data}} - \underbrace{\mathbb{E}[Y_i \mid G_i = PP,\ Z_i = 0,\ X_i]}_{\text{identifiable from assumptions}}
+\end{aligned}
+$$
+
+## Results
+
+### Method 1: Difference-in-differences
+
+After combining all of our data sets and filtering for players who had enough data pre- and post-surgery, we had a total of 1,282 units (49 treated and 1,233 control). We used the R package, `MatchIt`, to pair each treated unit with 10 control units using nearest neighbor matching with logistic regression and allowing for replacement. This gave us a final sample of 418 units, 49 treated and 369 control.
+
+After fitting the propensity score model and outcome models defined in the previous section, we can compute the three different estimators for $\hat{\theta_0}$, and finally ATT. Point estimates are shown below, as well as 95% confidence intervals which were calculated via 1,000 bootstrapped samples.
+
+```{r, cache = TRUE}
+dat = dat %>% select(-c(pitcher, height))
+
+bootstrap_DID = function(data, bootstrap = FALSE) {
+  if (bootstrap) {
+    df = sample_n(filter(data, TJ == 1), nrow(filter(data, TJ == 1)), replace = TRUE) %>%
+      rbind(sample_n(filter(data, TJ == 0), nrow(filter(data, TJ == 0)), replace = TRUE))
+  } else {
+    df = data
+  }
+  
+  # each unit gets two rows, one for pre- and post-treatment
+  dfDID = df %>% gather(key = "period", value = "velo", c("before", "after"))
+  
+  # fit outcome model
+  m = lm(velo ~ TJ + period + TJ:period + age + weight +
+           throws + fastest_pitch + starter + pitches, data = dfDID)
+  
+  # fit propensity score model
+  lm.ps = glm(TJ ~ . - after, data = df, family = "binomial")
+  df = df %>% mutate(ps = predict(lm.ps, type = "response"))
+  
+  # regression estimator
+  df = df %>% mutate(
+    predBefore = df %>% mutate(TJ = 0) %>%
+      select(-c(after, ps)) %>%
+      rename(velo = before) %>%
+      mutate(period = "before") %>%
+      select(names(dfDID)) %>%
+      predict(m, type = "response", newdata = .),
+    predAfter = df %>% mutate(TJ = 0) %>%
+      select(-c(before, ps)) %>%
+      rename(velo = after) %>%
+      mutate(period = "after") %>%
+      select(names(dfDID)) %>%
+      predict(m, type = "response", newdata = .),
+    w = ifelse(TJ == 1, 1, ps / (1 - ps)))
+  
+  t1 = df %>% summarize(sum(TJ * after) / sum(TJ)) %>% pull()
+  
+  t0reg = df %>%
+    summarize(
+      sum(TJ * before) / sum(TJ) + sum(TJ * (predAfter - predBefore)) / sum(TJ)) %>%
+    pull()
+  
+  t0ipw = df %>% summarize(
+    sum(TJ * before * w) / sum(TJ) + sum((1 - TJ) * (after - before) * w) / sum(TJ)) %>%
+    pull()
+  
+  t0dr_reg = df %>%
+    summarize(
+      sum((TJ - ps) * (predAfter - predBefore) / (1 - ps)) / sum(TJ)) %>%
+    pull()
+  
+  t0dr_ipw = df %>%
+    summarize(
+      sum((1 - TJ) * (after - before + predBefore - predAfter) * w) / sum(TJ)) %>%
+    pull()
+  
+  t0dr = t0ipw + t0dr_reg
+  
+  regATT = t1 - t0reg
+  ipwATT = t1 - t0ipw
+  drATT  = t1 - t0dr
+  
+  return(list(t1 = t1, t0reg = t0reg, t0ipw = t0ipw, t0dr = t0dr))
+}
+
+set.seed(2018)
+thetas = unlist(bootstrap_DID(dat))
+est.ATT = round(thetas[1] - thetas[-1], 4)
+
+nsamps = 1000
+bootstrap.ATT = sapply(1:nsamps, function(x) unlist(bootstrap_DID(dat, TRUE))) %>%
+  apply(1, function(x) {.[1,] - x})
+bootstrap.ATT = bootstrap.ATT[,-1]
+CI.ATT = apply(bootstrap.ATT, 2, function(x) {quantile(x, probs = c(0.025, 0.975))}) %>%
+  round(4)
+```
+
+```{r}
+df = data.frame(
+  Regression = c(est.ATT["t0reg"], paste0("(", paste(CI.ATT[,"t0reg"], collapse = ", "), ")")),
+  IPW = c(est.ATT["t0ipw"], paste0("(", paste(CI.ATT[,"t0ipw"], collapse = ", "), ")")),
+  DR = c(est.ATT["t0dr"], paste0("(", paste(CI.ATT[,"t0dr"], collapse = ", "), ")"))
+  )
+
+rownames(df) = c("$\\theta_1 - \\hat{\\theta_0}$", "95\\% Conf. Int.")
+kable(df, align = "c", booktabs = TRUE, format = "latex", escape = FALSE,
+      col.names = c("Regression", "IPW", "Double Robust"),
+      caption = "Average treatment effect for the treated") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+While all of the point estimates are slightly positive, 0 falls well within the bounds of the 95% confidence intervals. This suggests that we are unable to conclude there are any significant differences in pre- and post-fastball velocity before and after Tommy John surgery.
+
+To assess the parallel trend assumption, we repeat this analysis using two pre-treatment groups. If the ratio of $\theta_1$ to $\hat{\theta_0}$ is approximately 1, this indicates that the trend is plausibly the same between the two groups.
+
+```{r, cache = TRUE}
+units.TJ2 <- pitches.TJ %>% group_by(pitcher) %>%
+  filter( (before == TRUE & ((datetime > final - buff.pre.days - measure.period & datetime < final - buff.pre.days) |
+                               (datetime > final - 2*buff.pre.days - 2*measure.period & datetime < final - 2*buff.pre.days - measure.period)) ) |
+            (before == FALSE & datetime > first + buff.post.days & datetime < first + buff.post.days + measure.period)) %>%
+  inner_join(max_pitches, by = 'pitcher') %>%
+  mutate(age = as.numeric(round((surgery_date - bday)/365)),
+         period = case_when(before == TRUE & datetime > final - 2*buff.pre.days - 2*measure.period & datetime < final - 2*buff.pre.days - measure.period ~ "before2",
+                            before == TRUE & datetime > final - buff.pre.days - measure.period & datetime < final - buff.pre.days ~ "before",
+                            before == FALSE ~ "after")) %>%
+  group_by(pitcher, age, height, weight, throws, fastest_pitch, period) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch, na.rm = TRUE),
+            pitches = sum(before),
+            starter = sum(inning.x==1*before)) %>%
+  group_by(pitcher) %>%
+  mutate(pitches = max(pitches),
+         starter = max(starter) > 0) %>%
+  ungroup() %>%
+  mutate(period = factor(period, levels = c("before2", "before", "after")))  %>%
+  spread(period, velo) %>%
+  mutate(TJ = 1)
+
+pitches.NOTJ2 <- pitches.full4 %>%
+  filter(is.na(surgery_date)) %>%
+  inner_join(max_pitches, by = 'pitcher') %>%
+  mutate(year = year(datetime),
+         age = year(datetime) - year(bday) - 1) %>%
+  group_by(pitcher, year, age, height, weight, throws, fastest_pitch) %>%
+  summarize(velo = weighted.mean(start_speed, w = pitch_type == fastest_pitch),
+            pitches = n(),
+            starter = sum(inning.x==1)>0) %>%
+  mutate(year4 = year + 4,
+         year2 = year - 2)
+
+units.NOTJ2 <- pitches.NOTJ2 %>% inner_join(pitches.NOTJ2, by = c('pitcher', 'height', 'weight', 'throws',
+                                                                'fastest_pitch', 'year4' = 'year')) %>%
+  inner_join(pitches.NOTJ2, c('pitcher', 'height', 'weight', 'throws',
+                             'fastest_pitch', 'year2.x' = 'year')) %>%
+  ungroup() %>%
+  select(pitcher, age.x, height, weight, throws, fastest_pitch, pitches.x, starter.x, velo, velo.x, velo.y) %>%
+  setNames(c('pitcher', 'age', 'height', 'weight', 'throws', 'fastest_pitch', 'pitches', 'starter', 'before2', 'before', 'after')) %>%
+  mutate(TJ = 0)
+
+dat2 <- units.TJ2 %>% rbind(units.NOTJ2) %>%
+  filter(!is.na(before), !is.na(after), !is.na(before2), !is.nan(before), !is.nan(after), !is.nan(before2))
+
+match2 <- matchit(TJ ~ age + height + weight + throws +
+                   fastest_pitch + pitches + starter + before2,
+                 data = dat2, method = "nearest", distance = "logit",
+                 ratio = 10, replace = TRUE)
+
+control_matches2 <- sort(as.numeric(unique(as.vector(match2$match.matrix))))
+
+dat2 <- dat2 %>% filter(TJ == 1) %>% rbind(dat2[control_matches2,])
+```
+
+```{r, cache = TRUE}
+dat2 = dat2 %>%
+  select(-c(pitcher, height, after)) %>%
+  rename(after = before,
+         before = before2)
+
+set.seed(2018)
+thetas2 = unlist(bootstrap_DID(dat2))
+est.ATT2 = round(thetas2[1] / thetas2[-1], 4)
+
+nsamps = 1000
+bootstrap.ATT2 = sapply(1:nsamps, function(x) unlist(bootstrap_DID(dat2, TRUE))) %>%
+  apply(1, function(x) {.[1,] / x})
+bootstrap.ATT2 = bootstrap.ATT2[,-1]
+CI.ATT2 = apply(bootstrap.ATT2, 2, function(x) {quantile(x, probs = c(0.025, 0.975))}) %>%
+  round(4)
+```
+
+```{r}
+df = data.frame(
+  Regression = c(est.ATT2["t0reg"], paste0("(", paste(CI.ATT2[,"t0reg"], collapse = ", "), ")")),
+  IPW = c(est.ATT2["t0ipw"], paste0("(", paste(CI.ATT2[,"t0ipw"], collapse = ", "), ")")),
+  DR = c(est.ATT2["t0dr"], paste0("(", paste(CI.ATT2[,"t0dr"], collapse = ", "), ")"))
+  )
+
+rownames(df) = c("$\\theta_1\\ /\\ \\hat{\\theta_0}$", "95\\% Conf. Int.")
+kable(df, align = "c", booktabs = TRUE, format = "latex", escape = FALSE,
+      col.names = c("Regression", "IPW", "Double Robust"),
+      caption = "Assessing the parallel trend assumption") %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+Finally, we ensure that the data is balanced and that we have overlap between the groups' covariates. The distribution of propensity scores for each of the treated and control groups is shown before, and it is clear that overlap has been achieved. This is expected given that we had matched control units to the treated units to ensure that they had similar populations. Additionally, we look at the absolute standardized differences (ASD) between the regression and IPW estimators, and see that IPW has drastically improved the balance as compared to the unweighted estimator.
+
+
+```{r, fig.height = 2.5}
+### overlap
+df = dat
+lm.ps = glm(TJ ~ . - after, data = df, family = "binomial")
+df = df %>% mutate(ps = predict(lm.ps, type = "response"))
+  
+g1 = df %>%
+  ggplot(aes(ps, fill = factor(TJ))) + geom_histogram(alpha = 0.8) +
+  labs(x = "Propensity score", fill = "TJ surgery", y = "Count",
+       title = "Propensity score by group") +
+  theme_bw() +
+  theme(axis.title.x = element_text(family = "CMU Serif", size = 10),
+        axis.title.y = element_text(family = "CMU Serif", size = 10),
+        axis.text.x  = element_text(family = "CMU Serif", size = 9),
+        axis.text.y  = element_text(family = "CMU Serif", size = 9),
+        plot.title = element_text(family = "CMU Serif", size = 10),
+        legend.title = element_text(family = "CMU Serif", size = 9),
+        legend.text = element_text(family = "CMU Serif", size = 9),
+        legend.position = c(.87, .79),
+        legend.background = element_blank())
+
+### ASD
+dat_ASD = dat %>% mutate(starter = as.numeric(starter))
+dat_ASD = dat_ASD %>%
+  mutate_if(is.character, factor) %>%
+  select_if(is.factor) %>%
+  as.data.frame() %>%
+  acm.disjonctif() %>%
+  bind_cols(select_if(dat, is.numeric), .)
+  
+# fit propensity score model
+lm.ps = glm(TJ ~ . - after, data = dat_ASD, family = "binomial")
+dat_ASD = dat_ASD %>% mutate(ps = predict(lm.ps, type = "response"))
+
+D = dat_ASD$TJ
+weights_reg = 1
+weights_ipw = dat_ASD %>%
+  mutate(w = ifelse(TJ == 1, 1, ps / (1 - ps))) %>%
+  pull(w)
+
+calculate_ASD = function(weights) {
+  dat_ASD %>%
+    select(-c(TJ, after, ps)) %>%
+    apply(2, function(x) {
+      (abs(sum(D * x * weights) / sum(D * weights) -
+             sum((1 - D) * x * weights) / sum((1 - D) * weights)) /
+         sqrt(var((D * x)[which(D == 1)]) / sum(D * weights) +
+                var(((1 - D) * x)[which(D == 0)]) / sum((1 - D) * weights))
+       )
+    })
+  }
+
+g2 = data.frame(Unweighted = calculate_ASD(weights_reg),
+           IPW = calculate_ASD(weights_ipw)) %>%
+  gather(weight) %>%
+  mutate(weight = ordered(factor(weight), levels = c("Unweighted", "IPW"))) %>%
+  ggplot(aes(x = weight, y = value)) +
+  geom_boxplot() +
+  geom_hline(aes(yintercept = 0.1), linetype = "dashed", color = "blue") +
+  labs(y = "Abs. Standardized Difference", title = "ASD by estimator", x = " ") +
+  theme_bw() +
+  theme(axis.title.x = element_text(family = "CMU Serif", size = 10),
+        axis.title.y = element_text(family = "CMU Serif", size = 10),
+        axis.text.x  = element_text(family = "CMU Serif", size = 9),
+        axis.text.y  = element_text(family = "CMU Serif", size = 9),
+        plot.title = element_text(family = "CMU Serif", size = 10),
+        legend.title = element_text(family = "CMU Serif", size = 9),
+        legend.text = element_text(family = "CMU Serif", size = 9))
+
+ggarrange(plotlist = list(g1, g2), nrow = 1, ncol = 2)
+```
+
+
+### Method 2: Survivor Average Causal Effect via Principal Stratification
+
+SACE: estimand and confidence intervals
+
+## Discussion
+
+## References
+[1] Ding et al., (2011). Identifiability and Estimation of Causal Effects by Principal Stratification With Outcomes Truncated by Death. Journal of the American Statistical Association 106(496) DOI: 10.1198/jasa.2011.tm10265
+
+[2] Erickson BJ, Gupta AK, Harris JD, et al. Rate of return to pitching and performance after Tommy John surgery in Major League Baseball pitchers. Am J Sports Med. 2013;42(3): 536-542.
+
+[3] Jiang, J. J., & Martin Leland, J. (2014). Analysis of Pitching Velocity in Major League Baseball Players Before and After Ulnar Collateral Ligament Reconstruction. The American Journal of Sports Medicine, 42(4), 880–885. https://doi.org/10.1177/0363546513519072
+
+[4] Keller RA, Marshall NE, Guest J-M, Okoroha KR, Jung EK, Moutzouros V. Major League Baseball pitch velocity and pitch type associated with risk of ulnar collateral ligament injury. J Shoulder Elbow Surg. 2016;25(4):671–675.
+
+[5] Li, F. (2018, July). Difference-In-Differences for Causal Inference in Traffic Safety Research. Presented at JSM 2018, Vancouver, British Columbia.
+
+[6] Roegele, J. (2012, November 1). Tommy John Surgery List (\@MLBPlayerAnalys). Retrieved December 10, 2018, from https://docs.google.com/spreadsheets/d/1gQujXQQGOVNaiuwSN680Hq-FDVsCwvN-3AazykOBON0/edit#gid=0
+
+[7] Sievert C. (2014). Taming PITCHf/x Data with \{pitchRx\} and \{XML2R\} The R Journal, 6(1). URL http://journal.r-project.org/archive/2014-1/sievert.pdf.
+
+[8] Sievert C. (2015). pitchRx: Tools for Harnessing 'MLBAM' 'Gameday' Data and Visualizing 'pitchfx'. R package version 1.8.2.
+
+[9] Wang L, Zhou X, Richardson RS, (2017). Identification and estimation of causal effects with outcomes truncated by death. Biometrika, Volume 104, Issue 3, 1 September 2017, Pages 597–612,https://doi.org/10.1093/biomet/asx034
