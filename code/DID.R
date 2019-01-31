@@ -23,9 +23,13 @@ bootstrap_DID = function(data, bootstrap = FALSE) {
   # each unit gets two rows, one for pre- and post-treatment
   dfDID = df %>% gather(key = "period", value = "velo", c("before", "after"))
   
-  # fit outcome model
-  m = lm(velo ~ TJ + period + TJ:period + age + weight +
-           throws + fastest_pitch + starter + pitches, data = dfDID)
+  # fit outcome models
+  m.before = lm(velo ~ age + weight + throws + fastest_pitch +
+                  starter + pitches, data = dfDID,
+                subset = period == "before" & TJ == 0)
+  m.after = lm(velo ~ age + weight + throws + fastest_pitch +
+                 starter + pitches, data = dfDID,
+               subset = period == "after" & TJ == 0)
   
   # fit propensity score model
   lm.ps = glm(TJ ~ . - after, data = df, family = "binomial")
@@ -38,13 +42,13 @@ bootstrap_DID = function(data, bootstrap = FALSE) {
       rename(velo = before) %>%
       mutate(period = "before") %>%
       select(names(dfDID)) %>%
-      predict(m, type = "response", newdata = .),
+      predict(m.before, type = "response", newdata = .),
     predAfter = df %>% mutate(TJ = 0) %>%
       select(-c(before, ps)) %>%
       rename(velo = after) %>%
       mutate(period = "after") %>%
       select(names(dfDID)) %>%
-      predict(m, type = "response", newdata = .),
+      predict(m.after, type = "response", newdata = .),
     w = ifelse(TJ == 1, 1, ps / (1 - ps)))
   
   t1 = df %>% summarize(sum(TJ * after) / sum(TJ)) %>% pull()
@@ -75,7 +79,6 @@ bootstrap_DID = function(data, bootstrap = FALSE) {
   drATT  = t1 - t0dr
   
   return(list(t1 = t1, t0reg = t0reg, t0ipw = t0ipw, t0dr = t0dr))
-  # return(list(regATT = regATT, ipwATT = ipwATT, drATT = drATT))
 }
 
 set.seed(2018)
