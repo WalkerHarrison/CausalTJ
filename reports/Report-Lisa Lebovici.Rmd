@@ -21,8 +21,9 @@ library(ggpubr)
 library(extrafont)
 
 # before running:
-# Sys.setenv(TZ="America/New_York")
-# loadfonts()
+Sys.setenv(TZ="America/New_York")
+font_import()
+loadfonts()
 ```
 
 ```{r, cache = TRUE}
